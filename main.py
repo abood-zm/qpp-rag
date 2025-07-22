@@ -12,11 +12,10 @@ from transformers import AutoTokenizer, AutoModel
 from sklearn.metrics.pairwise import cosine_similarity
 
 
-class DocumentContextSelector:
-    def __init__(self, strategy="full", encoder_model="sentence-transformers/all-MiniLM-L6-v2", max_docs=10):
+class ContextSelector:
+    def __init__(self, strategy="full", encoder_model="sentence-transformers/all-MiniLM-L6-v2"):
         self.strategy = strategy
         self.encoder_model = encoder_model
-        self.max_docs = max_docs
         self.tokenizer = None
         self.model = None
 
@@ -25,7 +24,7 @@ class DocumentContextSelector:
             self.model = AutoModel.from_pretrained(encoder_model)
     
     def encode_text(self, text):
-        if isinstance(text, str):
+        if isinstance(text,'str'):
             text = [text]
         
         inputs = self.tokenizer(text, padding=True, truncation=True, return_tensors='pt', max_length=512)
@@ -36,211 +35,129 @@ class DocumentContextSelector:
         
         return embeddings.numpy()
 
-    def select_documents(self, query, documents):
-        """
-        Select which documents to include based on the strategy.
-        
-        Args:
-            query: The current query string
-            documents: List of document dictionaries with 'text' and other fields
-            
-        Returns:
-            List of selected documents
-        """
-        if not documents:
-            return documents
-  
+
+    def select_context(self, original_query, intermediate_queries, context_metadata=None):
         if self.strategy == "full":
-            return documents[:self.max_docs]
+            return list(range(len(intermediate_queries)))
         elif self.strategy == "none":
             return []
         elif self.strategy == "first_only":
-            return documents[:1] if documents else []
+            return [0] if intermediate_queries else []
         elif self.strategy == "last_only":
-            return documents[-1:] if documents else []
-        elif self.strategy == "half":
-            mid_point = len(documents) // 2
-            return documents[:mid_point] if documents else []
+            return [len(intermediate_queries) - 1] if intermediate_queries else []
         elif self.strategy == "similarity":
-            return self._similarity_selection(query, documents)
+            return self._similarity(original_query, intermediate_queries)
         elif self.strategy == "diversity":
-            return self._diversity_selection(documents)
+            return self._diversity(intermediate_queries)
         elif self.strategy == "hybrid":
-            return self._hybrid_selection(query, documents)
-        elif self.strategy.startswith("fixed_"): # e.g., fixed_3 for first 3 docs
-            num_docs = int(self.strategy.split('_')[1])
-            return documents[:num_docs] if documents else []
-        elif self.strategy.startswith("random_"): # e.g., random_3 for 3 random docs
-            num_docs = int(self.strategy.split('_')[1])
-            if len(documents) <= num_docs:
-                return documents
-            indices = np.random.choice(len(documents), num_docs, replace=False)
-            return [documents[i] for i in sorted(indices)]
+            return self._hybrid(original_query=original_query, intermediate_queries=intermediate_queries)
+        elif self.strategy.startswith("fixed_"): # Fixed_1,3 
+            indices = [int(x) for x in self.strategy.split('_')[1].split(',')]
+            return [i for i in indices if i < len(intermediate_queries)]
         else:
-            raise ValueError(f"Unknown strategy: {self.strategy}")
+            raise ValueError("Unknown context")
 
-    def _similarity_selection(self, query, documents, top_k=5):
-        if not documents:
-            return []
+
+    def _similarity(self, original_query, intermediate_queries, top_k = 3):
+        if not intermediate_queries:
+            return None
         
-        query_embedding = self.encode_text(query)
-        
-        # Extract text from documents for encoding
-        doc_texts = []
-        for doc in documents:
-            # Try different possible text fields
-            text = doc.get('text', '') or doc.get('body', '') or doc.get('content', '') or str(doc)
-            doc_texts.append(text)
-        
-        doc_embeddings = self.encode_text(doc_texts)
-        similarities = cosine_similarity(query_embedding, doc_embeddings)[0]
-        
-        top_k = min(top_k, len(documents))
+        original_embeddings = self.encode_text(original_query)
+
+        intermediate_queries = [ctx[0] for ctx in intermediate_queries]
+        intermediate_embeddings = self.encode_text(intermediate_queries)
+
+        similarities = cosine_similarity(original_embeddings, intermediate_embeddings)[0]
+
         top_indices = np.argsort(similarities)[-top_k:][::-1]
-        
-        return [documents[i] for i in top_indices]
+        return top_indices.tolist()
     
-    def _diversity_selection(self, documents, max_docs=5):
-        if not documents:
+    def _diversity(self, intermediate_queries, max_contexts=3):
+        if not intermediate_queries:
             return []
         
-        if len(documents) <= max_docs:
-            return documents
+        if len(intermediate_queries) <= max_contexts:
+            return list(range(len(intermediate_queries)))
         
-        # Extract text from documents
-        doc_texts = []
-        for doc in documents:
-            text = doc.get('text', '') or doc.get('body', '') or doc.get('content', '') or str(doc)
-            doc_texts.append(text)
-        
-        embeddings = self.encode_text(doc_texts)
-        selected_indices = [0]  # Start with first document
+        intermediate_queries = [ctx[0] for ctx in intermediate_queries]
+        embeddings = self.encode_text(intermediate_queries)
 
-        # Greedy diversity selection
-        for _ in range(max_docs - 1):
-            if len(selected_indices) >= len(documents):
+        selected = [0]
+
+        # do greedy algo
+        for _ in range(max_contexts-1):
+            if len(selected) >= len(intermediate_queries):
                 break
 
-            best_candidate = -1
-            best_min_similarity = -1
+            best_match = -1
+            best_min_cand = -1
 
-            for i in range(len(documents)):
-                if i in selected_indices:
+            for i in range(len(intermediate_queries)):
+                if i in selected:
                     continue
 
-                # Calculate minimum similarity to already selected documents
-                min_sim = min([cosine_similarity(embeddings[i:i+1], embeddings[j:j+1])[0][0] 
-                              for j in selected_indices])
+                min_sim = min([cosine_similarity(embeddings[i:i+1], embeddings[j:j+1])[0][0] for j in selected])
 
-                if min_sim > best_min_similarity:
-                    best_min_similarity = min_sim
-                    best_candidate = i
+                if min_sim > best_min_cand:
+                    best_min_cand = min_sim
+                    best_match = i
 
-            if best_candidate != -1:
-                selected_indices.append(best_candidate)
+            if best_match != -1:
+                selected.append(best_match)
         
-        return [documents[i] for i in selected_indices]
+        return selected
     
-    def _hybrid_selection(self, query, documents):
-        if not documents:
+    def _hybrid(self, original_query, intermediate_queries):
+        if not intermediate_queries:
             return []
         
-        # First get top similar documents
-        sim_docs = self._similarity_selection(query, documents, top_k=min(8, len(documents)))
-        
-        # Then apply diversity selection on the similar documents
-        if len(sim_docs) > 3:
-            return self._diversity_selection(sim_docs, max_docs=3)
-        
-        return sim_docs
+        sim_queries = self._similarity(original_query=original_query, intermediate_queries=intermediate_queries, top_k=5)
 
+        if len(sim_queries) > 3:
+            sim_contexts = [(intermediate_queries[i][0], intermediate_queries[i][1]) for i in sim_queries]
+            div_contexts = self._diversity(sim_contexts, max_contexts=3)
+            return [sim_queries[i] for i in div_contexts]
 
-class DocumentFilteringTransformer(pt.Transformer):
-    """
-    PyTerrier transformer that filters retrieved documents based on strategy
-    """
-    def __init__(self, strategy="full", max_docs=10, encoder_model="sentence-transformers/all-MiniLM-L6-v2"):
-        self.context_selector = DocumentContextSelector(strategy, encoder_model, max_docs)
-        self.logs = []
-    
-    def transform(self, inp):
-        results = []
-        
-        for qid in inp.qid.unique():
-            query_data = inp[inp.qid == qid]
-            query = query_data.iloc[0]['query']
-            
-            # Convert retrieval results to document format
-            documents = []
-            for _, row in query_data.iterrows():
-                doc = {
-                    'docno': row.get('docno', ''),
-                    'text': row.get('text', ''),
-                    'title': row.get('title', ''),
-                    'score': row.get('score', 0.0),
-                    'rank': row.get('rank', 0)
-                }
-                documents.append(doc)
-            
-            # Apply document selection
-            selected_docs = self.context_selector.select_documents(query, documents)
-            
-            # Log selection info
-            self.logs.append({
-                'qid': qid,
-                'query': query,
-                'original_docs': len(documents),
-                'selected_docs': len(selected_docs),
-                'strategy': self.context_selector.strategy
-            })
-            
-            # Convert back to DataFrame format
-            for doc in selected_docs:
-                results.append({
-                    'qid': qid,
-                    'query': query,
-                    'docno': doc['docno'],
-                    'text': doc['text'],
-                    'title': doc['title'],
-                    'score': doc['score'],
-                    'rank': doc.get('rank', 0)
-                })
-        
-        return pd.DataFrame(results) if results else pd.DataFrame(columns=['qid', 'query', 'docno', 'text', 'title', 'score', 'rank'])
+        return sim_queries
 
+class CustomPipeline:
+    def __init__(self, retriever, top_k = 3, model="r1"):
+        self.retriever = retriever
+        self.top_k = top_k
+        self.model = model
+        self.context_logs = []
 
-def run_document_filtering_experiment(retriever, queries, answers, strategies, k=3, task="nq_test", model="r1"):
-    """
-    Run experiments with different document filtering strategies
-    """
-    results = {}
+        self.pipelines = self._create_pipelines()
 
-    for strategy in strategies:
-        print(f"Running experiment with strategy: {strategy}")
-        
-        # Create document filter
-        doc_filter = DocumentFilteringTransformer(strategy=strategy, max_docs=k*2)
-        
-        # Create pipeline: retriever -> document filter -> RAG model
-        if model == "r1":
-            rag_model = pyterrier_rag.SearchR1(retriever >> doc_filter, retrieval_top_k=k)
-        elif model == "r1s":
+    def _create_pipelines(self):
+        pipelines = {}
+        configs = ["full_context", "no_context", "original_only"]
+
+        if self.model == "r1":
+            for config in configs:
+                pipelines[config] = pyterrier_rag.SearchR1(self.retriever, self.top_k)
+        elif self.model == "r1s":
             model_kwargs = {
                 'tensor_parallel_size': 1,
                 'dtype': 'bfloat16',
-                'quantization': 'bitsandbytes',
+                'quantization': 'bitsandsbytes',
                 'gpu_memory_utilization': 0.7,
                 'max_model_len': 92000
             }
-            rag_model = pyterrier_rag.R1Searcher(
-                retriever >> doc_filter, top_k=k, verbose=False,
-                model_kw_args=model_kwargs
-            )
+            for config in configs:
+                pipelines[config] = pyterrier_rag.R1Searcher(
+                self.retriever, top_k=self.top_k, verbose=False,
+                model_kw_args=model_kwargs)
+
         
-        strategy_results = []
+        return pipelines
+    
+    def run_pipeline(self, queries, answers, config="full_context"):
+        pipeline = self.pipelines[config]
+        results = []
+
         batch_size = 10
-        
-        for i in tqdm(range(0, len(queries), batch_size), desc=f"Processing {strategy}"):
+        for i in tqdm(range(0, len(queries), batch_size), desc=f"Processing {config}"):
             batch_queries = queries.iloc[i:i+batch_size]
 
             for _, query_row in batch_queries.iterrows():
@@ -248,50 +165,71 @@ def run_document_filtering_experiment(retriever, queries, answers, strategies, k
                 query = query_row['query']
 
                 try:
-                    result = rag_model.search(query)
+                    result = pipeline.search(query)
                     answer = result.iloc[0]['qanswer'] if not result.empty else None
-                    
-                    strategy_results.append({
+
+                    self._log_analysis(qid, query, config, answer)
+
+                    results.append({
                         "qid": qid,
                         "query": query,
                         "qanswer": answer,
-                        "strategy": strategy
+                        "config": config
                     })
                 
                 except Exception as e:
-                    print(f"Error processing query {qid} with strategy {strategy}: {e}")
-                    strategy_results.append({
+                    print(f"Error processing query {qid}: {e}")
+                    results.append({
                         "qid": qid,
                         "query": query,
                         "qanswer": None,
-                        "strategy": strategy
+                        "config": config
                     })
 
-        strategy_df = pd.DataFrame(strategy_results)
-        eval_results = evaluator(strategy_df, answers)
+        return pd.DataFrame(results)
         
-        results[strategy] = {
-            "results": strategy_df,
+    def _log_analysis(self, qid, query, config, answer):
+        log_entry  = {
+            'qid': qid,
+            'query': query,
+            'config': config,
+            'answer': answer is not None,
+            'answer_length': len(answer) if answer else 0
+        }
+        self.context_logs.append(log_entry)
+
+    def _save_logs(self, filepath):
+        with open(filepath, 'w') as f:
+            json.dump(self.context_logs, f, indent=2)
+
+def run_baseline(retriever, queries, answers, configs, k=3, task="nq_test", model="r1"):
+    results = {}
+
+    analyzer = CustomPipeline(retriever=retriever, top_k=k, model=model)
+
+    for config in configs:
+        print(f"Running experiment on {config}")
+
+        config_results = analyzer.run_pipeline(queries=queries, answers=answers, config=config)
+        eval_results = evaluator(config_results, answers)
+
+        results[config] = {
+            "results": config_results,
             "evaluation": eval_results,
             "mean_em": eval_results['em'].mean(),
             "mean_f1": eval_results['f1'].mean(),
-            "filter_logs": doc_filter.logs
         }
-        
-        # Save results
-        output_filename = f"filtered_{strategy}_{k}_{task}_{model}.res"
-        strategy_df.to_csv(f"./filtered_res/{output_filename}", index=False)
-        eval_results.to_csv(f"./filtered_eval/{output_filename}", index=False)
-        
-        # Save filter logs
-        log_filename = f"filtered_{strategy}_{k}_{task}_{model}_logs.json"
-        with open(f"./filtered_logs/{log_filename}", 'w') as f:
-            json.dump(doc_filter.logs, f, indent=2)
-        
-        print(f"Strategy {strategy}: EM={results[strategy]['mean_em']:.3f}, F1={results[strategy]['mean_f1']:.3f}")
-    
-    return results
 
+        output_filename = f"baseline_{config}_{k}_{task}_{model}.res"
+        config_results.to_csv(f"./baseline_res/{output_filename}", index=False)
+        eval_results.to_csv(f"./baseline_eval/{output_filename}", index=False)
+
+        print(f"Config: {config}: EM={results[config]['mean_em']:.3f}, F1={results[config]['mean_f1']:.3f}")
+    
+    log_filename = f"baseline_analysis_{k}_{task}_{model}_logs.json"
+    analyzer._save_logs(f"./baseline_logs/{log_filename}")
+
+    return results
 
 def evaluator(res, _ans):
     df_content = []
@@ -315,7 +253,6 @@ def evaluator(res, _ans):
     
     return pd.DataFrame(df_content, columns=['qid', 'em', 'f1'])
 
-
 def log_fn(res, _ret, _ans, _k=3, _task='nq_test', _model='r1'):
     if(_task=='nq_test'):
         output_filename = f"{_ret}_{_k}_{_model}.res"
@@ -327,7 +264,6 @@ def log_fn(res, _ret, _ans, _k=3, _task='nq_test', _model='r1'):
     eval_res = evaluator(res, _ans)
     eval_res.to_csv(f"./eval_res/{output_filename}", mode='a', index=False, header=not eval_csvfile.exists())
     return res
-
 
 def log_qpp(res, _ret, _k, _index=-1, q_encoder=-1, _task='nq_test', _model='r1'):
     if(_task=='nq_test'):
@@ -351,7 +287,6 @@ def log_qpp(res, _ret, _k, _index=-1, q_encoder=-1, _task='nq_test', _model='r1'
     qpp_df = pd.DataFrame(qpp_df_values, columns=['qid', 'query', 'qpp_method', 'qpp_estimation', 'qpp_parameters']) 
     qpp_df.to_csv(f"./qpp_res/{output_filename}", mode='a', index=False, header=not csvfile.exists())
     return res
-
 
 def load_retriever(_ret, _task='nq_test', _model='r1'):
     if(not pt.java.started()):
@@ -396,11 +331,10 @@ if __name__=="__main__":
     parser.add_argument("--k", type=int, default=3)
     parser.add_argument("--model", type=str, default='r1', choices=['r1', 'r1s'])
     parser.add_argument("--task", type=str, default='nq_test', choices=['nq_test', 'hotpotqa_dev'])
-    parser.add_argument("--experiment", type=str, default="original", choices=['original', 'filtered'])
-    parser.add_argument("--strategies", type=str, nargs='+', 
-                       default=['full', 'none', 'half', 'similarity', 'diversity', 'hybrid'],
-                       help="Document selection strategies to test")
-    parser.add_argument("--subset_size", type=int, default=None, help="Number of samples to use from the dataset")
+    parser.add_argument("--experiment", type=str, default="original", choices=['original', 'baseline'])
+    parser.add_argument("--configs", type=str, nargs='+', default=['full_context', 'no_context','original_only'])
+    # NEW ARGUMENT FOR DATASET SIZE
+    parser.add_argument("--subset_size", type=int, default=None, help="Number of samples to use from the dataset (default: use full dataset)")
     
     args = parser.parse_args()
     k = args.k
@@ -408,13 +342,12 @@ if __name__=="__main__":
     ret = args.retriever
     task = args.task
     experiment = args.experiment
-    strategies = args.strategies
+    configs = args.configs
     subset_size = args.subset_size
 
-    # Create directories for filtered experiment results
-    pathlib.Path("./filtered_res").mkdir(exist_ok=True)
-    pathlib.Path("./filtered_eval").mkdir(exist_ok=True)
-    pathlib.Path("./filtered_logs").mkdir(exist_ok=True)
+    pathlib.Path("./baseline_res").mkdir(exist_ok=True)
+    pathlib.Path("./baseline_eval").mkdir(exist_ok=True)
+    pathlib.Path("./baseline_logs").mkdir(exist_ok=True)
     
     # Load datasets
     if(task=='nq_test'):
@@ -424,10 +357,11 @@ if __name__=="__main__":
         queries = pd.read_csv('./hotpotqa_materials/hotpotqa_queries.csv')
         answers = pd.read_csv('./hotpotqa_materials/hotpotqa_answers.csv')
 
-    # Subset the data if requested
+    # SUBSET THE DATA IF REQUESTED
     if subset_size is not None:
         print(f"Using subset of {subset_size} samples from the dataset")
         queries = queries.head(subset_size)
+        # Filter answers to match the subset of queries
         subset_qids = queries['qid'].tolist()
         answers = answers[answers['qid'].isin(subset_qids)]
         print(f"Subset created: {len(queries)} queries, {len(answers)} answers")
@@ -453,10 +387,12 @@ if __name__=="__main__":
         else:
             output_filename = f"{ret}_{k}_{task}_{model}.res"
 
+        # MODIFIED: Check existing results based on subset size
         try:
             existing_res_df = pd.read_csv(f"./res/{output_filename}")
             num_existing_qids = existing_res_df.shape[0]
             if subset_size is not None:
+                # If using subset, start from 0 to avoid confusion
                 num_existing_qids = 0
                 print("Starting fresh due to subset usage")
         except:
@@ -465,25 +401,12 @@ if __name__=="__main__":
         print(f'Retrieval pipeline {ret} for {task} is now loaded!')
 
         _batch_size = 10
+
         print(f'Start generation! k={k}, processing {len(queries)} queries')
         for i in tqdm(range(num_existing_qids, len(queries), _batch_size)):
             _batch_queries = queries.iloc[i: i+_batch_size]
             r1_pipeline(_batch_queries)
     
-    elif experiment == "filtered":
-        print("Running the document filtering experiment...")
-        
-        results = run_document_filtering_experiment(
-            retriever=retriever, 
-            queries=queries, 
-            answers=answers, 
-            strategies=strategies, 
-            k=k, 
-            task=task, 
-            model=model
-        )
-        
-        # Print summary
-        print("\n=== DOCUMENT FILTERING EXPERIMENT SUMMARY ===")
-        for strategy, data in results.items():
-            print(f"{strategy:15s}: EM={data['mean_em']:.3f}, F1={data['mean_f1']:.3f}")
+    elif experiment == "baseline":
+        print("Running the baseline experiment...")
+        results = run_baseline(retriever, queries, answers, configs, k=k, task=task, model=model)
