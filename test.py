@@ -49,7 +49,7 @@ class DocumentContextSelector:
         """
         if not documents:
             return documents
-  
+            
         if self.strategy == "full":
             return documents[:self.max_docs]
         elif self.strategy == "none":
@@ -209,7 +209,7 @@ class DocumentFilteringTransformer(pt.Transformer):
         return pd.DataFrame(results) if results else pd.DataFrame(columns=['qid', 'query', 'docno', 'text', 'title', 'score', 'rank'])
 
 
-def run_document_filtering_experiment(retriever, queries, answers, strategies, k=3, task="nq_test", model="r1"):
+def run_document_filtering_experiment(retriever, queries, answers, strategies, k=3, task="nq_test", model="r1", ret="bm25"):
     """
     Run experiments with different document filtering strategies
     """
@@ -221,9 +221,11 @@ def run_document_filtering_experiment(retriever, queries, answers, strategies, k
         # Create document filter
         doc_filter = DocumentFilteringTransformer(strategy=strategy, max_docs=k*2)
         
-        # Create pipeline: retriever -> document filter -> RAG model
+        # Create pipeline: retriever -> document filter -> RAG model -> logging
+        filtered_retriever = retriever >> doc_filter
+        
         if model == "r1":
-            rag_model = pyterrier_rag.SearchR1(retriever >> doc_filter, retrieval_top_k=k)
+            rag_model = pyterrier_rag.SearchR1(filtered_retriever, retrieval_top_k=k)
         elif model == "r1s":
             model_kwargs = {
                 'tensor_parallel_size': 1,
@@ -233,39 +235,31 @@ def run_document_filtering_experiment(retriever, queries, answers, strategies, k
                 'max_model_len': 92000
             }
             rag_model = pyterrier_rag.R1Searcher(
-                retriever >> doc_filter, top_k=k, verbose=False,
+                filtered_retriever, top_k=k, verbose=False,
                 model_kw_args=model_kwargs
             )
+        
+        # Add logging to the pipeline
+        pipeline = rag_model >> pt.apply.generic(lambda x: log_fn(x, ret, answers, k, task, model, strategy=strategy, experiment="filtered", log_type="rag_answers"))
         
         strategy_results = []
         batch_size = 10
         
         for i in tqdm(range(0, len(queries), batch_size), desc=f"Processing {strategy}"):
             batch_queries = queries.iloc[i:i+batch_size]
-
-            for _, query_row in batch_queries.iterrows():
-                qid = query_row['qid']
-                query = query_row['query']
-
-                try:
-                    result = rag_model.search(query)
-                    answer = result.iloc[0]['qanswer'] if not result.empty else None
-                    
-                    strategy_results.append({
-                        "qid": qid,
-                        "query": query,
-                        "qanswer": answer,
-                        "strategy": strategy
-                    })
-                
-                except Exception as e:
-                    print(f"Error processing query {qid} with strategy {strategy}: {e}")
-                    strategy_results.append({
-                        "qid": qid,
-                        "query": query,
-                        "qanswer": None,
-                        "strategy": strategy
-                    })
+            # Process the batch through the pipeline
+            filtered_df = doc_filter.transform(batch_queries)
+            # Fixed: Add log_type parameter for retrieval logging
+            log_qpp(filtered_df, ret, k, _task=task, _model=model, strategy=strategy, experiment="filtered", log_type="retrieval")
+            batch_results = pipeline(batch_queries)
+            # Convert to list of dictionaries for consistency
+            for _, row in batch_results.iterrows():
+                strategy_results.append({
+                    "qid": row['qid'],
+                    "query": row['query'],
+                    "qanswer": row['qanswer'],
+                    "strategy": strategy
+                })
 
         strategy_df = pd.DataFrame(strategy_results)
         eval_results = evaluator(strategy_df, answers)
@@ -277,11 +271,6 @@ def run_document_filtering_experiment(retriever, queries, answers, strategies, k
             "mean_f1": eval_results['f1'].mean(),
             "filter_logs": doc_filter.logs
         }
-        
-        # Save results
-        output_filename = f"filtered_{strategy}_{k}_{task}_{model}.res"
-        strategy_df.to_csv(f"./filtered_res/{output_filename}", index=False)
-        eval_results.to_csv(f"./filtered_eval/{output_filename}", index=False)
         
         # Save filter logs
         log_filename = f"filtered_{strategy}_{k}_{task}_{model}_logs.json"
@@ -316,30 +305,75 @@ def evaluator(res, _ans):
     return pd.DataFrame(df_content, columns=['qid', 'em', 'f1'])
 
 
-def log_fn(res, _ret, _ans, _k=3, _task='nq_test', _model='r1'):
-    if(_task=='nq_test'):
-        output_filename = f"{_ret}_{_k}_{_model}.res"
+def log_fn(res, _ret, _ans, _k=3, _task='nq_test', _model='r1', experiment=None, strategy=None, log_type=None):
+    # Determine output directories based on experiment type
+    if experiment == "filtered":
+        res_dir = "./filtered_res"
+        eval_dir = "./filtered_eval"
     else:
-        output_filename = f"{_ret}_{_k}_{_task}_{_model}.res"
-    csvfile = pathlib.Path(f"./res/{output_filename}")
-    eval_csvfile = pathlib.Path(f"./eval_res/{output_filename}")
-    res.to_csv(f"./res/{output_filename}", mode='a', index=False, header=not csvfile.exists())
+        res_dir = "./res"
+        eval_dir = "./eval_res"
+    pathlib.Path(res_dir).mkdir(exist_ok=True)
+    pathlib.Path(eval_dir).mkdir(exist_ok=True)
+
+    if(_task=='nq_test'):
+        if strategy is not None:
+            output_filename = f"{_ret}_{_k}_{strategy}_filtered_{_model}.res" if experiment == "filtered" else f"{_ret}_{_k}_{strategy}_{_model}.res"
+        else:
+            output_filename = f"{_ret}_{_k}_filtered_{_model}.res" if experiment == "filtered" else f"{_ret}_{_k}_{_model}.res"
+    else:
+        if strategy is not None:
+            output_filename = f"{_ret}_{_k}_{strategy}_filtered_{_task}_{_model}.res" if experiment == "filtered" else f"{_ret}_{_k}_{strategy}_{_task}_{_model}.res"
+        else:
+            output_filename = f"{_ret}_{_k}_filtered_{_task}_{_model}.res" if experiment == "filtered" else f"{_ret}_{_k}_{_task}_{_model}.res"
+    
+    csvfile = pathlib.Path(f"{res_dir}/{output_filename}")
+    eval_csvfile = pathlib.Path(f"{eval_dir}/{output_filename}")
+    res.to_csv(f"{res_dir}/{output_filename}", mode='a', index=False, header=not csvfile.exists())
     eval_res = evaluator(res, _ans)
-    eval_res.to_csv(f"./eval_res/{output_filename}", mode='a', index=False, header=not eval_csvfile.exists())
+    eval_res.to_csv(f"{eval_dir}/{output_filename}", mode='a', index=False, header=not eval_csvfile.exists())
     return res
 
 
-def log_qpp(res, _ret, _k, _index=-1, q_encoder=-1, _task='nq_test', _model='r1'):
-    if(_task=='nq_test'):
-        output_filename = f"{_ret}_{_k}_{_model}.res"
+def log_qpp(res, _ret, _k, _index=-1, q_encoder=-1, _task='nq_test', _model='r1', strategy=None, experiment=None, log_type=None):
+    # Determine output directories based on experiment type
+    if experiment == "filtered":
+        qpp_dir = "./filtered_qpp_res"
+        retrieval_dir = "./filtered_retrieval_res"
     else:
-        output_filename = f"{_ret}_{_k}_{_task}_{_model}.res"
-    csvfile = pathlib.Path(f"./qpp_res/{output_filename}")
-    retrieval_res_csvfile = pathlib.Path(f"./retrieval_res/{output_filename}")
+        qpp_dir = "./qpp_res"
+        retrieval_dir = "./retrieval_res"
+    pathlib.Path(qpp_dir).mkdir(exist_ok=True)
+    pathlib.Path(retrieval_dir).mkdir(exist_ok=True)
+
+    # Compose output filename
+    if(_task=='nq_test'):
+        if strategy is not None:
+            if experiment == "filtered" and log_type:
+                output_filename = f"{_ret}_{_k}_{strategy}_filtered_{log_type}_{_model}.res"
+            elif strategy is not None:
+                output_filename = f"{_ret}_{_k}_{strategy}_filtered_{_model}.res" if experiment == "filtered" else f"{_ret}_{_k}_{strategy}_{_model}.res"
+            else:
+                output_filename = f"{_ret}_{_k}_filtered_{_model}.res" if experiment == "filtered" else f"{_ret}_{_k}_{_model}.res"
+        else:
+            output_filename = f"{_ret}_{_k}_filtered_{_model}.res" if experiment == "filtered" else f"{_ret}_{_k}_{_model}.res"
+    else:
+        if strategy is not None:
+            if experiment == "filtered" and log_type:
+                output_filename = f"{_ret}_{_k}_{strategy}_filtered_{log_type}_{_task}_{_model}.res"
+            elif strategy is not None:
+                output_filename = f"{_ret}_{_k}_{strategy}_filtered_{_task}_{_model}.res" if experiment == "filtered" else f"{_ret}_{_k}_{strategy}_{_task}_{_model}.res"
+            else:
+                output_filename = f"{_ret}_{_k}_filtered_{_task}_{_model}.res" if experiment == "filtered" else f"{_ret}_{_k}_{_task}_{_model}.res"
+        else:
+            output_filename = f"{_ret}_{_k}_filtered_{_task}_{_model}.res" if experiment == "filtered" else f"{_ret}_{_k}_{_task}_{_model}.res"
+
+    csvfile = pathlib.Path(f"{qpp_dir}/{output_filename}")
+    retrieval_res_csvfile = pathlib.Path(f"{retrieval_dir}/{output_filename}")
     qpp_df_values = []
     for qid in res.qid.unique():
         sorted_res = res[res.qid==qid].sort_values(by=['score'], ascending=False)
-        sorted_res.iloc[:200].to_csv(f"./retrieval_res/{output_filename}", mode='a', index=False, header=not retrieval_res_csvfile.exists())
+        sorted_res.iloc[:200].to_csv(f"{retrieval_dir}/{output_filename}", mode='a', index=False, header=not retrieval_res_csvfile.exists())
         query_text = res[res.qid==qid]['query'].values[0]
         nqc_est = qpp.nqc(res[res.qid==qid], qid, k=100)
         qpp_df_values.append([qid, query_text, 'nqc', nqc_est, str({'k': 100})])
@@ -349,11 +383,11 @@ def log_qpp(res, _ret, _k, _index=-1, q_encoder=-1, _task='nq_test', _model='r1'
             spatial_est = qpp.spatial_prediction(res[res.qid==qid], qid, max(3, _k), q_encoder, _index)
             qpp_df_values.append([qid, query_text, 'spatial', spatial_est, str({'k': max(3, _k)})])
     qpp_df = pd.DataFrame(qpp_df_values, columns=['qid', 'query', 'qpp_method', 'qpp_estimation', 'qpp_parameters']) 
-    qpp_df.to_csv(f"./qpp_res/{output_filename}", mode='a', index=False, header=not csvfile.exists())
+    qpp_df.to_csv(f"{qpp_dir}/{output_filename}", mode='a', index=False, header=not csvfile.exists())
     return res
 
 
-def load_retriever(_ret, _task='nq_test', _model='r1'):
+def load_retriever(_ret, _task='nq_test', _model='r1', experiment="original", strategy=None, k=3):
     if(not pt.java.started()):
         pt.java.init()
     print(f'Loading retriever {_ret} for {_task}....')
@@ -371,11 +405,11 @@ def load_retriever(_ret, _task='nq_test', _model='r1'):
         bm25_pipeline = pt.rewrite.tokenise() >> bm25 >> sparse_index.text_loader(["text", "title"]) >> pt.rewrite.reset() 
 
     if(_ret == 'bm25'):
-        return bm25_pipeline >> pt.apply.generic(lambda x : log_qpp(x, _ret, k, _task=_task, _model=_model))
+        return bm25_pipeline >> pt.apply.generic(lambda x : log_qpp(x, _ret, k, _task=_task, _model=_model, strategy=strategy, experiment=experiment))
     elif(_ret == 'monoT5'):
         from pyterrier_t5 import MonoT5ReRanker
         monoT5 = MonoT5ReRanker(batch_size=64, verbose=False)
-        return (bm25_pipeline % 20) >> monoT5 >> pt.apply.generic(lambda x : log_qpp(x, _ret, k, _task=_task, _model=_model))
+        return (bm25_pipeline % 20) >> monoT5 >> pt.apply.generic(lambda x : log_qpp(x, _ret, k, _task=_task, _model=_model, strategy=strategy, experiment=experiment))
     elif(_ret =='E5'):
         from pyterrier_dr import E5
         import pyterrier_dr
@@ -387,7 +421,7 @@ def load_retriever(_ret, _task='nq_test', _model='r1'):
 
         e5_query_encoder = E5()
         e5_ret = e5_query_encoder >> e5_index.torch_retriever(fp16=True, num_results=120) >> sparse_index.text_loader(["text", "title"])
-        return e5_ret >> pt.apply.generic(lambda x : log_qpp(x, _ret, k, e5_index, e5_query_encoder, _task=_task, _model=_model))
+        return e5_ret >> pt.apply.generic(lambda x : log_qpp(x, _ret, k, e5_index, e5_query_encoder, _task=_task, _model=_model, strategy=strategy, experiment=experiment))
 
 
 if __name__=="__main__":
@@ -411,10 +445,17 @@ if __name__=="__main__":
     strategies = args.strategies
     subset_size = args.subset_size
 
-    # Create directories for filtered experiment results
+    # Create directories for both original and filtered experiment results
+    pathlib.Path("./res").mkdir(exist_ok=True)
+    pathlib.Path("./eval_res").mkdir(exist_ok=True)
+    pathlib.Path("./qpp_res").mkdir(exist_ok=True)
+    pathlib.Path("./retrieval_res").mkdir(exist_ok=True)
+    
     pathlib.Path("./filtered_res").mkdir(exist_ok=True)
     pathlib.Path("./filtered_eval").mkdir(exist_ok=True)
     pathlib.Path("./filtered_logs").mkdir(exist_ok=True)
+    pathlib.Path("./filtered_qpp_res").mkdir(exist_ok=True)
+    pathlib.Path("./filtered_retrieval_res").mkdir(exist_ok=True)
     
     # Load datasets
     if(task=='nq_test'):
@@ -434,18 +475,19 @@ if __name__=="__main__":
     else:
         print(f"Using full dataset: {len(queries)} queries, {len(answers)} answers")
 
-    retriever = load_retriever(ret, task, model)
-
+    qpp = QPP()
+    
     if experiment == "original":
         print("Running the original pipeline...")
-        qpp = QPP()
+        retriever = load_retriever(ret, task, model, experiment)
+        
         if(model=='r1'):
             print('Loading R1 pipeline ....')
-            r1_pipeline = pyterrier_rag.SearchR1(retriever, retrieval_top_k=k) >> pt.apply.generic(lambda x : log_fn(x, ret, answers, k, task, model))
+            r1_pipeline = pyterrier_rag.SearchR1(retriever, retrieval_top_k=k) >> pt.apply.generic(lambda x : log_fn(x, ret, answers, k, task, model, experiment))
             print('R1 pipeline is now loaded!')
         elif(model=='r1s'):
             print('Loading R1-Searcher pipeline ....')
-            r1_pipeline = pyterrier_rag.R1Searcher(retriever, top_k=k, verbose=False, model_kw_args={'tensor_parallel_size':1, 'dtype':'bfloat16', 'quantization':"bitsandbytes", 'gpu_memory_utilization':0.6, 'max_model_len':92000}) >> pt.apply.generic(lambda x : log_fn(x, ret, answers, k, task, model))
+            r1_pipeline = pyterrier_rag.R1Searcher(retriever, top_k=k, verbose=False, model_kw_args={'tensor_parallel_size':1, 'dtype':'bfloat16', 'quantization':"bitsandbytes", 'gpu_memory_utilization':0.6, 'max_model_len':92000}) >> pt.apply.generic(lambda x : log_fn(x, ret, answers, k, task, model, experiment))
             print('R1-Searcher pipeline is now loaded!')
 
         if(task=='nq_test'):
@@ -473,14 +515,18 @@ if __name__=="__main__":
     elif experiment == "filtered":
         print("Running the document filtering experiment...")
         
+        # Load retriever without logging (we'll add logging in the filtered experiment)
+        base_retriever = load_retriever(ret, task, model, experiment="original")
+        
         results = run_document_filtering_experiment(
-            retriever=retriever, 
+            retriever=base_retriever, 
             queries=queries, 
             answers=answers, 
             strategies=strategies, 
             k=k, 
             task=task, 
-            model=model
+            model=model,
+            ret=ret
         )
         
         # Print summary
