@@ -2,234 +2,9 @@ import pyterrier as pt
 import pyterrier_rag
 import pandas as pd
 import argparse
-import json
-import torch
-import numpy as np
 import pathlib
 from tqdm import tqdm
 from qpp_methods import *
-from transformers import AutoTokenizer, AutoModel
-from sklearn.metrics.pairwise import cosine_similarity
-
-
-class ContextSelector:
-    def __init__(self, strategy="full", encoder_model="sentence-transformers/all-MiniLM-L6-v2"):
-        self.strategy = strategy
-        self.encoder_model = encoder_model
-        self.tokenizer = None
-        self.model = None
-
-        if strategy in ["similarity", 'diversity', 'hybrid']:
-            self.tokenizer = AutoTokenizer.from_pretrained(encoder_model)
-            self.model = AutoModel.from_pretrained(encoder_model)
-    
-    def encode_text(self, text):
-        if isinstance(text,'str'):
-            text = [text]
-        
-        inputs = self.tokenizer(text, padding=True, truncation=True, return_tensors='pt', max_length=512)
-
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-            embeddings = outputs.last_hidden_state.mean(dim=1)
-        
-        return embeddings.numpy()
-
-
-    def select_context(self, original_query, intermediate_queries, context_metadata=None):
-        if self.strategy == "full":
-            return list(range(len(intermediate_queries)))
-        elif self.strategy == "none":
-            return []
-        elif self.strategy == "first_only":
-            return [0] if intermediate_queries else []
-        elif self.strategy == "last_only":
-            return [len(intermediate_queries) - 1] if intermediate_queries else []
-        elif self.strategy == "similarity":
-            return self._similarity(original_query, intermediate_queries)
-        elif self.strategy == "diversity":
-            return self._diversity(intermediate_queries)
-        elif self.strategy == "hybrid":
-            return self._hybrid(original_query=original_query, intermediate_queries=intermediate_queries)
-        elif self.strategy.startswith("fixed_"): # Fixed_1,3 
-            indices = [int(x) for x in self.strategy.split('_')[1].split(',')]
-            return [i for i in indices if i < len(intermediate_queries)]
-        else:
-            raise ValueError("Unknown context")
-
-
-    def _similarity(self, original_query, intermediate_queries, top_k = 3):
-        if not intermediate_queries:
-            return None
-        
-        original_embeddings = self.encode_text(original_query)
-
-        intermediate_queries = [ctx[0] for ctx in intermediate_queries]
-        intermediate_embeddings = self.encode_text(intermediate_queries)
-
-        similarities = cosine_similarity(original_embeddings, intermediate_embeddings)[0]
-
-        top_indices = np.argsort(similarities)[-top_k:][::-1]
-        return top_indices.tolist()
-    
-    def _diversity(self, intermediate_queries, max_contexts=3):
-        if not intermediate_queries:
-            return []
-        
-        if len(intermediate_queries) <= max_contexts:
-            return list(range(len(intermediate_queries)))
-        
-        intermediate_queries = [ctx[0] for ctx in intermediate_queries]
-        embeddings = self.encode_text(intermediate_queries)
-
-        selected = [0]
-
-        # do greedy algo
-        for _ in range(max_contexts-1):
-            if len(selected) >= len(intermediate_queries):
-                break
-
-            best_match = -1
-            best_min_cand = -1
-
-            for i in range(len(intermediate_queries)):
-                if i in selected:
-                    continue
-
-                min_sim = min([cosine_similarity(embeddings[i:i+1], embeddings[j:j+1])[0][0] for j in selected])
-
-                if min_sim > best_min_cand:
-                    best_min_cand = min_sim
-                    best_match = i
-
-            if best_match != -1:
-                selected.append(best_match)
-        
-        return selected
-    
-    def _hybrid(self, original_query, intermediate_queries):
-        if not intermediate_queries:
-            return []
-        
-        sim_queries = self._similarity(original_query=original_query, intermediate_queries=intermediate_queries, top_k=5)
-
-        if len(sim_queries) > 3:
-            sim_contexts = [(intermediate_queries[i][0], intermediate_queries[i][1]) for i in sim_queries]
-            div_contexts = self._diversity(sim_contexts, max_contexts=3)
-            return [sim_queries[i] for i in div_contexts]
-
-        return sim_queries
-
-class CustomPipeline:
-    def __init__(self, retriever, top_k = 3, model="r1"):
-        self.retriever = retriever
-        self.top_k = top_k
-        self.model = model
-        self.context_logs = []
-
-        self.pipelines = self._create_pipelines()
-
-    def _create_pipelines(self):
-        pipelines = {}
-        configs = ["full_context", "no_context", "original_only"]
-
-        if self.model == "r1":
-            for config in configs:
-                pipelines[config] = pyterrier_rag.SearchR1(self.retriever, self.top_k)
-        elif self.model == "r1s":
-            model_kwargs = {
-                'tensor_parallel_size': 1,
-                'dtype': 'bfloat16',
-                'quantization': 'bitsandsbytes',
-                'gpu_memory_utilization': 0.7,
-                'max_model_len': 92000
-            }
-            for config in configs:
-                pipelines[config] = pyterrier_rag.R1Searcher(
-                self.retriever, top_k=self.top_k, verbose=False,
-                model_kw_args=model_kwargs)
-
-        
-        return pipelines
-    
-    def run_pipeline(self, queries, answers, config="full_context"):
-        pipeline = self.pipelines[config]
-        results = []
-
-        batch_size = 10
-        for i in tqdm(range(0, len(queries), batch_size), desc=f"Processing {config}"):
-            batch_queries = queries.iloc[i:i+batch_size]
-
-            for _, query_row in batch_queries.iterrows():
-                qid = query_row['qid']
-                query = query_row['query']
-
-                try:
-                    result = pipeline.search(query)
-                    answer = result.iloc[0]['qanswer'] if not result.empty else None
-
-                    self._log_analysis(qid, query, config, answer)
-
-                    results.append({
-                        "qid": qid,
-                        "query": query,
-                        "qanswer": answer,
-                        "config": config
-                    })
-                
-                except Exception as e:
-                    print(f"Error processing query {qid}: {e}")
-                    results.append({
-                        "qid": qid,
-                        "query": query,
-                        "qanswer": None,
-                        "config": config
-                    })
-
-        return pd.DataFrame(results)
-        
-    def _log_analysis(self, qid, query, config, answer):
-        log_entry  = {
-            'qid': qid,
-            'query': query,
-            'config': config,
-            'answer': answer is not None,
-            'answer_length': len(answer) if answer else 0
-        }
-        self.context_logs.append(log_entry)
-
-    def _save_logs(self, filepath):
-        with open(filepath, 'w') as f:
-            json.dump(self.context_logs, f, indent=2)
-
-def run_baseline(retriever, queries, answers, configs, k=3, task="nq_test", model="r1"):
-    results = {}
-
-    analyzer = CustomPipeline(retriever=retriever, top_k=k, model=model)
-
-    for config in configs:
-        print(f"Running experiment on {config}")
-
-        config_results = analyzer.run_pipeline(queries=queries, answers=answers, config=config)
-        eval_results = evaluator(config_results, answers)
-
-        results[config] = {
-            "results": config_results,
-            "evaluation": eval_results,
-            "mean_em": eval_results['em'].mean(),
-            "mean_f1": eval_results['f1'].mean(),
-        }
-
-        output_filename = f"baseline_{config}_{k}_{task}_{model}.res"
-        config_results.to_csv(f"./baseline_res/{output_filename}", index=False)
-        eval_results.to_csv(f"./baseline_eval/{output_filename}", index=False)
-
-        print(f"Config: {config}: EM={results[config]['mean_em']:.3f}, F1={results[config]['mean_f1']:.3f}")
-    
-    log_filename = f"baseline_analysis_{k}_{task}_{model}_logs.json"
-    analyzer._save_logs(f"./baseline_logs/{log_filename}")
-
-    return results
 
 def evaluator(res, _ans):
     df_content = []
@@ -331,21 +106,12 @@ if __name__=="__main__":
     parser.add_argument("--k", type=int, default=3)
     parser.add_argument("--model", type=str, default='r1', choices=['r1', 'r1s'])
     parser.add_argument("--task", type=str, default='nq_test', choices=['nq_test', 'hotpotqa_dev'])
-    parser.add_argument("--experiment", type=str, default="original", choices=['original', 'baseline'])
-    parser.add_argument("--configs", type=str, nargs='+', default=['full_context', 'no_context','original_only'])
-
     
     args = parser.parse_args()
     k = args.k
     model = args.model
     ret = args.retriever
     task = args.task
-    experiment = args.experiment
-    configs = args.configs
-
-    pathlib.Path("./baseline_res").mkdir(exist_ok=True)
-    pathlib.Path("./baseline_eval").mkdir(exist_ok=True)
-    pathlib.Path("./baseline_logs").mkdir(exist_ok=True)
     
     if(task=='nq_test'):
         queries = pt.get_dataset('rag:nq').get_topics('test')
@@ -354,53 +120,44 @@ if __name__=="__main__":
         queries = pd.read_csv('./hotpotqa_materials/hotpotqa_queries.csv')
         answers = pd.read_csv('./hotpotqa_materials/hotpotqa_answers.csv')
 
+    qpp = QPP()
+
     retriever = load_retriever(ret, task, model)
-
-    if experiment == "original":
-        print("Running the original pipeline...")
-        qpp = QPP()
-        if(model=='r1'):
-            print('Loading R1 pipeline ....')
-            r1_pipeline = pyterrier_rag.SearchR1(retriever, retrieval_top_k=k) >> pt.apply.generic(lambda x : log_fn(x, ret, answers, k, task, model))
-            print('R1 pipeline is now loaded!')
-        elif(model=='r1s'):
-            print('Loading R1-Searcher pipeline ....')
-            r1_pipeline = pyterrier_rag.R1Searcher(retriever, top_k=k, verbose=False, model_kw_args={'tensor_parallel_size':1, 'dtype':'bfloat16', 'quantization':"bitsandbytes", 'gpu_memory_utilization':0.6, 'max_model_len':92000}) >> pt.apply.generic(lambda x : log_fn(x, ret, answers, k, task, model))
-            print('R1-Searcher pipeline is now loaded!')
-
-        if(task=='nq_test'):
-            output_filename = f"{ret}_{k}_{model}.res"
-        else:
-            output_filename = f"{ret}_{k}_{task}_{model}.res"
-
-        try:
-            existing_res_df = pd.read_csv(f"./res/{output_filename}")
-            num_existing_qids = existing_res_df.shape[0]
-        except:
-            num_existing_qids = 0
-
-        print(f'Retrieval pipeline {ret} for {task} is now loaded!')
-
-        _batch_size = 10
-
-        # check whether there are existing records
-
-        print(f'Start generation! k={k}')
-        for i in tqdm(range(num_existing_qids, queries.shape[0], _batch_size)):
-            _batch_queries = queries.iloc[i: i+_batch_size]
-            r1_pipeline(_batch_queries)
-    
-    elif experiment == "baseline":
-        print("Running the baseline experiment...")
-        results = run_baseline(retriever, queries, answers, configs, k=3, task="nq_test", model="r1")
-        
+    print(f'Retrieval pipeline {ret} for {task} is now loaded!')
 
     # # test retrieval
     # ret_result = retriever.search('who got the first nobel prize in physics?')
     # print(ret_result)
 
+    if(model=='r1'):
+        print('Loading R1 pipeline ....')
+        r1_pipeline = pyterrier_rag.SearchR1(retriever, retrieval_top_k=k) >> pt.apply.generic(lambda x : log_fn(x, ret, answers, k, task, model))
+        print('R1 pipeline is now loaded!')
+    elif(model=='r1s'):
+        print('Loading R1-Searcher pipeline ....')
+        r1_pipeline = pyterrier_rag.R1Searcher(retriever, top_k=k, verbose=False, model_kw_args={'tensor_parallel_size':1, 'dtype':'bfloat16', 'quantization':"bitsandbytes", 'gpu_memory_utilization':0.6, 'max_model_len':92000}) >> pt.apply.generic(lambda x : log_fn(x, ret, answers, k, task, model))
+        print('R1-Searcher pipeline is now loaded!')
         # , model_kw_args={'tensor_parallel_size':1, 'dtype':'bfloat16', 'quantization':"bitsandbytes", 'gpu_memory_utilization':0.6, 'max_model_len':92000}
 
     ## test r1 pipeline
     # r1_result = r1_pipeline.search("What are chemical reactions?")
     # print(r1_result)
+
+    _batch_size = 10
+
+    # check whether there are existing records
+    if(task=='nq_test'):
+        output_filename = f"{ret}_{k}_{model}.res"
+    else:
+        output_filename = f"{ret}_{k}_{task}_{model}.res"
+
+    try:
+        existing_res_df = pd.read_csv(f"./res/{output_filename}")
+        num_existing_qids = existing_res_df.shape[0]
+    except:
+        num_existing_qids = 0
+
+    print(f'Start generation! k={k}')
+    for i in tqdm(range(num_existing_qids, queries.shape[0], _batch_size)):
+        _batch_queries = queries.iloc[i: i+_batch_size]
+        r1_pipeline(_batch_queries)
