@@ -20,7 +20,7 @@ class DocumentContextSelector:
         self.tokenizer = None
         self.model = None
 
-        if strategy in ["similarity", 'diversity', 'hybrid']:
+        if strategy in ["query_specifity"]:
             self.tokenizer = AutoTokenizer.from_pretrained(encoder_model)
             self.model = AutoModel.from_pretrained(encoder_model)
     
@@ -39,13 +39,7 @@ class DocumentContextSelector:
     def select_documents(self, query, documents):
         """
         Select which documents to include based on the strategy.
-        
-        Args:
-            query: The current query string
-            documents: List of document dictionaries with 'text' and other fields
-            
-        Returns:
-            List of selected documents
+
         """
         if not documents:
             return documents
@@ -61,6 +55,8 @@ class DocumentContextSelector:
         elif self.strategy == "half":
             mid_point = len(documents) // 2
             return documents[:mid_point] if documents else []
+        elif self.strategy == "query_specificity":
+            return DocumentSpecificity(documents)
         elif self.strategy.startswith("fixed_"): # e.g., fixed_3 for first 3 docs
             num_docs = int(self.strategy.split('_')[1])
             return documents[:num_docs] if documents else []
@@ -73,26 +69,18 @@ class DocumentContextSelector:
         else:
             raise ValueError(f"Unknown strategy: {self.strategy}")
 
-    def _similarity_selection(self, query, documents, top_k=5):
-        if not documents:
-            return []
-        
-        query_embedding = self.encode_text(query)
-        
-        # Extract text from documents for encoding
-        doc_texts = []
-        for doc in documents:
-            # Try different possible text fields
-            text = doc.get('text', '') or doc.get('body', '') or doc.get('content', '') or str(doc)
-            doc_texts.append(text)
-        
-        doc_embeddings = self.encode_text(doc_texts)
-        similarities = cosine_similarity(query_embedding, doc_embeddings)[0]
-        
-        top_k = min(top_k, len(documents))
-        top_indices = np.argsort(similarities)[-top_k:][::-1]
-        
-        return [documents[i] for i in top_indices]
+class DocumentSpecificity:
+    """
+    Document specificity would select documents and feed them back into the retrieval based on the following:
+    1. Entity Density: Documents with more names, dates, numbers, etc are considered more specific.
+    2. Vocabulary Complexity: Documents that have longer words would be more complex.
+    3. Document Structure: Documents with lists, citations, and references.
+    4. Content Depth: Document with detail indicators and research language.
+    5. Query Alignment: TF-IDF (IDF????) similarity focuseding on query-specific terms.
+    """
+    def __init__(self, documents):
+        self.documents = documents
+    
     
 class DocumentFilteringTransformer(pt.Transformer):
     """
@@ -384,7 +372,7 @@ if __name__=="__main__":
     strategies = args.strategies
     subset_size = args.subset_size
 
-    # Create directories for both original and filtered experiment results
+    # Create directories if they don't exist
     pathlib.Path("./res").mkdir(exist_ok=True)
     pathlib.Path("./eval_res").mkdir(exist_ok=True)
     pathlib.Path("./qpp_res").mkdir(exist_ok=True)
@@ -454,7 +442,6 @@ if __name__=="__main__":
     elif experiment == "filtered":
         print("Running the document filtering experiment...")
         
-        # Load retriever without logging (we'll add logging in the filtered experiment)
         base_retriever = load_retriever(ret, task, model, experiment="original")
         
         results = run_document_filtering_experiment(
