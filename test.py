@@ -61,12 +61,6 @@ class DocumentContextSelector:
         elif self.strategy == "half":
             mid_point = len(documents) // 2
             return documents[:mid_point] if documents else []
-        elif self.strategy == "similarity":
-            return self._similarity_selection(query, documents)
-        elif self.strategy == "diversity":
-            return self._diversity_selection(documents)
-        elif self.strategy == "hybrid":
-            return self._hybrid_selection(query, documents)
         elif self.strategy.startswith("fixed_"): # e.g., fixed_3 for first 3 docs
             num_docs = int(self.strategy.split('_')[1])
             return documents[:num_docs] if documents else []
@@ -100,61 +94,6 @@ class DocumentContextSelector:
         
         return [documents[i] for i in top_indices]
     
-    def _diversity_selection(self, documents, max_docs=5):
-        if not documents:
-            return []
-        
-        if len(documents) <= max_docs:
-            return documents
-        
-        # Extract text from documents
-        doc_texts = []
-        for doc in documents:
-            text = doc.get('text', '') or doc.get('body', '') or doc.get('content', '') or str(doc)
-            doc_texts.append(text)
-        
-        embeddings = self.encode_text(doc_texts)
-        selected_indices = [0]  # Start with first document
-
-        # Greedy diversity selection
-        for _ in range(max_docs - 1):
-            if len(selected_indices) >= len(documents):
-                break
-
-            best_candidate = -1
-            best_min_similarity = -1
-
-            for i in range(len(documents)):
-                if i in selected_indices:
-                    continue
-
-                # Calculate minimum similarity to already selected documents
-                min_sim = min([cosine_similarity(embeddings[i:i+1], embeddings[j:j+1])[0][0] 
-                              for j in selected_indices])
-
-                if min_sim > best_min_similarity:
-                    best_min_similarity = min_sim
-                    best_candidate = i
-
-            if best_candidate != -1:
-                selected_indices.append(best_candidate)
-        
-        return [documents[i] for i in selected_indices]
-    
-    def _hybrid_selection(self, query, documents):
-        if not documents:
-            return []
-        
-        # First get top similar documents
-        sim_docs = self._similarity_selection(query, documents, top_k=min(8, len(documents)))
-        
-        # Then apply diversity selection on the similar documents
-        if len(sim_docs) > 3:
-            return self._diversity_selection(sim_docs, max_docs=3)
-        
-        return sim_docs
-
-
 class DocumentFilteringTransformer(pt.Transformer):
     """
     PyTerrier transformer that filters retrieved documents based on strategy
