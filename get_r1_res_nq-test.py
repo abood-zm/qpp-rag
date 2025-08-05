@@ -6,6 +6,66 @@ import pathlib
 from tqdm import tqdm
 from qpp_methods import *
 
+# Add this to your second code - very simple implementation:
+
+def create_standard_rag_pipeline(retriever, k=3, task='nq_test', model='standard_rag'):
+    """Create a standard RAG pipeline: retrieve + generate (no reasoning)"""
+    
+    # Simple generator function for standard RAG
+    def standard_rag_generator(df):
+        from openai import OpenAI
+        import os
+        
+        client = OpenAI(base_url="http://api.terrier.org/v1", api_key=os.environ["IDA_LLM_API_KEY"])
+        
+        results = []
+        for qid in df.qid.unique():
+            query_data = df[df.qid == qid]
+            query = query_data.iloc[0]['query']
+            
+            # Get top-k retrieved documents
+            contexts = []
+            for _, row in query_data.head(k).iterrows():
+                contexts.append(f"Title: {row.get('title', '')}\nText: {row['text']}")
+            
+            # Build standard RAG prompt
+            context_text = "\n\n".join(contexts)
+            prompt = f"""Based on the following context, answer the question directly and concisely.
+
+Context:
+{context_text}
+
+Question: {query}
+Answer:"""
+            
+            try:
+                response = client.completions.create(
+                    model='qwen-2.5-7b-instruct',
+                    prompt=prompt
+                )
+                answer = response.choices[0].text.strip() if response.choices else "No Response"
+                # Clean the answer
+                answer = re.sub(r'^(The answer is|Answer:)\s*', '', answer, flags=re.IGNORECASE)
+                answer = answer.strip()
+            except Exception as e:
+                print(f"Error generating answer for {qid}: {e}")
+                answer = "Error generating answer"
+            
+            results.append({
+                'qid': qid,
+                'query': query,
+                'qanswer': answer,
+                'output': answer,
+                'iteration': 1,
+                'all_queries': str([query])
+            })
+        
+        return pd.DataFrame(results)
+    
+    # Return the pipeline: retrieve -> generate
+    return retriever >> pt.apply.generic(standard_rag_generator) >> pt.apply.generic(lambda x: log_fn(x, 'standard_rag', answers, k, task, model))
+
+
 def evaluator(res, _ans):
     df_content = []
     
@@ -104,7 +164,7 @@ if __name__=="__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--retriever", type=str, default='bm25', choices=['bm25', 'monoT5', 'E5'])
     parser.add_argument("--k", type=int, default=3)
-    parser.add_argument("--model", type=str, default='r1', choices=['r1', 'r1s'])
+    parser.add_argument("--model", type=str, default='r1', choices=['r1', 'r1s', 'standard_rag'])
     parser.add_argument("--task", type=str, default='nq_test', choices=['nq_test', 'hotpotqa_dev'])
     
     args = parser.parse_args()
@@ -138,10 +198,11 @@ if __name__=="__main__":
         r1_pipeline = pyterrier_rag.R1Searcher(retriever, top_k=k, verbose=False, model_kw_args={'tensor_parallel_size':1, 'dtype':'bfloat16', 'quantization':"bitsandbytes", 'gpu_memory_utilization':0.6, 'max_model_len':92000}) >> pt.apply.generic(lambda x : log_fn(x, ret, answers, k, task, model))
         print('R1-Searcher pipeline is now loaded!')
         # , model_kw_args={'tensor_parallel_size':1, 'dtype':'bfloat16', 'quantization':"bitsandbytes", 'gpu_memory_utilization':0.6, 'max_model_len':92000}
-
-    ## test r1 pipeline
-    # r1_result = r1_pipeline.search("What are chemical reactions?")
-    # print(r1_result)
+    elif(model=='standard_rag'):
+        print('Loading Standard RAG pipeline ....')
+        r1_pipeline = create_standard_rag_pipeline(retriever, k, task, model)
+        print('Standard RAG pipeline is now loaded!')
+ 
 
     _batch_size = 10
 
