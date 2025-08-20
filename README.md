@@ -50,31 +50,26 @@ The codebase includes three main Python scripts:
 
 1. Clone the repository:
 
-```bash
-git clone https://github.com/<your-username>/adaptive-rag.git
 
----
+`git clone https://github.com/<your-username>/adaptive-rag.git`
+
 
 ## 2.Install dependencies:
 `pip install -r requirements.txt`
 
---
-
 ## 3. Run post-hoc analysis:
 ### For dynamic cutoff:
-`python post-hoc-analysis.py --dynamic'
+`python post-hoc-analysis.py --dynamic`
 
 ### For static cutoff:
 `python post-hoc-analysis.py --cutoff 1`
 
---
 
 ## 4. Run dynamic real-time experiments:
 `python dynamic-RT.py`
 
 **Note:** Ensure that retrieval models and datasets are correctly configured in the environment.
 
---
 
 ## Citation:
 
