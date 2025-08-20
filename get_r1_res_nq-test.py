@@ -6,8 +6,6 @@ import pathlib
 from tqdm import tqdm
 from qpp_methods import *
 
-# Add this to your second code - very simple implementation:
-
 def create_standard_rag_pipeline(retriever, k=3, task='nq_test', model='standard_rag'):
     """Create a standard RAG pipeline: retrieve + generate (no reasoning)"""
     
