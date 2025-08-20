@@ -1,12 +1,3 @@
-"""
-okay so to get this straight and summarize it in a nutshell.
-1. I will run the code on full dataset to get the logs -- DONE
-2. i will make a new script that is supposed to do the post run analysis.
-3. Since we have the intermediate queries in the res folder and the qpp scores in the qpp_res folder, we can use these to do the analysis
-4. For the cut off, we will choose for example 2, and then extract the intermediate queries, and feed them to a generator which is the qwen instruction 7b model with a prompt that i develop. The prompt will include the intermediate queries with a slight tweak like generate a short answer.
-5. I will log the answers and then evaluate them and log everything.
-
-"""
 
 import pandas as pd
 import argparse
@@ -33,12 +24,11 @@ class PostAnalysis:
         self.output_dir = output_dir
         self.results_df = None
         self.task = task
-        # for dynamic cutoff
         self.qpp_filepath = qpp_filepath
+        self.res_filepath = res_filepath
         self.dynamic = dynamic
         self.qpp_df = None
         self.dynamic_cutoff = {}
-        self.res_filepath = res_filepath
 
         if dynamic and qpp_filepath:
             self.qpp_df = pd.read_csv(self.qpp_filepath)
@@ -75,9 +65,6 @@ class PostAnalysis:
             })
         return pd.DataFrame(answers)
     def calculate_dynamic_cutoff(self):
-        """
-        Remember: (Qi - Qi-1)/ Qi-1 > 0.25
-        """
         cutoff = {}
         res_df = pd.read_csv(self.res_filepath)
 
@@ -125,12 +112,9 @@ class PostAnalysis:
                     assistant_output = assistant_output.split("<|im_end|>")[0]
             else:
                 assistant_output = output
-            
-            # print(f"DEBUG - Processing QID: {qid}")
+
             search_pattern = r"(<think>.*?</think>\s*<search>.*?</search>\s*<information>.*?</information>)"
             matches = re.findall(search_pattern, assistant_output, flags=re.DOTALL)
-            
-            # print(f"DEBUG - Found {len(matches)} matches in assistant output")
             
             if self.dynamic:
                 current_cutoff = self.dynamic_cutoff[qid]
@@ -160,8 +144,6 @@ class PostAnalysis:
     
         intermediate_content = ""
         for qid, query in enumerate(intermediate_queries):
-            # print(f"DEBUG - Processing intermediate query {qid}")
-            # print(f"DEBUG - Query content: {query[:100]}...")
             
             think_pattern = r"<think>(.*?)</think>"
             think_part = re.search(think_pattern, query, flags=re.DOTALL)
@@ -169,64 +151,18 @@ class PostAnalysis:
                 print("DEBUG - Think part is not found!")
                 print(f"DEBUG - Full query: {query}")
             think_term = think_part.group(1).strip() if think_part else "N/A"
-            # print(f"DEBUG - Think term: '{think_term}'")
                 
             search_pattern = r"<search>(.*?)</search>"
             search_part = re.search(search_pattern, query, flags=re.DOTALL)
             search_term = search_part.group(1).strip() if search_part else "N/A"
-            # print(f"DEBUG - Search term: '{search_term}'")
             
             info_pattern = r"<information>(.*?)</information>"
             info_part = re.search(info_pattern, query, flags=re.DOTALL)
             if not info_part:
                 print("DEBUG - Info part not found!")
-                # print(f"DEBUG - Full query: {query}")
             info_term = info_part.group(1).strip() if info_part else "N/A"
-            # print(f"DEBUG - Info term length: {len(info_term)}")
             
             intermediate_content += f"<think> {think_term} </think>\n\n<search> {search_term} </search>\n\n<information> {info_term} </information>"
-        # print(f"DEBUGGING: {intermediate_content}")
-        prompt = f"""You are a helpful assistant. Based on the search results provided below, give a direct and concise answer to the question.
-
-Search results:
-{intermediate_content}
-
-Instructions:
-- Use only the information provided in the search results above
-- If multiple results contain relevant information, synthesize them
-- Give only the most accurate and specific answer possible
-- Do not explain your reasoning or add extra information
-- Generate the exact answer.
-- Keep the answer short (3-4 words only)
-
-Question: {original_query}
-Answer:"""
-
-        prompt2 = f"""<|im_start|>system
-You are a helpful assistant.<|im_end|>
-<|im_start|>user
-Answer the given question <question> {original_query} </question>. You must conduct reasoning inside <think> and </think> first every time you get new information. After reasoning, if you find you lack some knowledge, you can call a search engine by <search> query </search> and it will return the top searched results between <information> and </information>. You can search as many times as your want. If you find no further external knowledge needed, you can directly provide the answer inside <answer> and </answer>, without detailed illustrations. For example, <answer> Beijing </answer>. Question: who got the first nobel prize in physics?
-<|im_end|>
-<|im_start|>assistant
-
-{intermediate_content}
-
-<answer> </answer>
-        """
-        prompt3 = f"""<|im_start|>system
-You are a helpful assistant.<|im_end|>
-<|im_start|>user
-Answer the given question based on the search results provided below. Give only a direct, concise answer (3-4 words maximum).
-
-Search results:
-{intermediate_content.strip()}
-
-Question: {original_query}
-
-Provide only the answer.
-<|im_end|>
-<|im_start|>assistant
-Answer: """
 
         prompt4 = f""""<|im_start|>system
 You are a helpful assistant.<|im_end|>
@@ -249,7 +185,6 @@ Answer the given question. You must conduct reasoning inside <think> and </think
             
             # Clean the generated answer
             generated_answer = raw_answer
-            # Remove common prefixes and XML tags
             generated_answer = re.sub(r'^(The answer is|Answer:)\s*', '', generated_answer, flags=re.IGNORECASE)
             generated_answer = re.sub(r'</?answer>', '', generated_answer)
             generated_answer = generated_answer.strip()
@@ -257,7 +192,7 @@ Answer the given question. You must conduct reasoning inside <think> and </think
             logger.info(f"Successfully generated answer for QID: {qid}")
             return {
                 "generated_answer": generated_answer,
-                "raw_answer": raw_answer,  # Keep raw for debugging
+                "raw_answer": raw_answer, 
                 "status":"success",
                 "error":None
             }
@@ -267,7 +202,7 @@ Answer the given question. You must conduct reasoning inside <think> and </think
             return {
                 "generated_answer":None,
                 "status":"failed",
-                "error":str(e)  # FIXED: Convert exception to string for JSON serialization
+                "error":str(e)
             }
 
     def generating_answers(self):
@@ -298,11 +233,13 @@ Answer the given question. You must conduct reasoning inside <think> and </think
     Answer: """
             
             final_result = self.generator_model(final_prompt, qid)
-            
             if final_result['generated_answer']:
                 final_answer = re.sub(r'</?answer>', '', final_result['generated_answer']).strip()
                 final_answer = re.sub(r'^(The answer is|Answer:)\s*', '', final_answer, flags=re.IGNORECASE)
+                if final_answer == "Yes" or final_answer == "No":
+                    final_answer.lower()
                 final_result['generated_answer'] = final_answer
+
                 result_entry = {
                         "qid": qid,
                         "original_query": data['query'],
@@ -316,7 +253,7 @@ Answer the given question. You must conduct reasoning inside <think> and </think
                     }
             self.result.append(result_entry)
             print(f"QID: {qid}")
-            # print(f"Prompt:{prompt}")
+            print(f"Prompt:{final_prompt}")
             print(f"Original Query: {data['query']}")
             print(f"Golden Answer: '{data['golden_answer']}'")
             print(f"Generated Answer: '{final_result['generated_answer']}'")
@@ -325,14 +262,14 @@ Answer the given question. You must conduct reasoning inside <think> and </think
             print(f"Intermediate Queries Count: {len(data['inter_queries'])}")
             print("-" * 80)
 
-    def prepare_results(self):  # FIXED: Method name matches the call
+    def prepare_results(self):
         df_data = []
         for result in self.result:
             df_data.append({
                 'qid': result['qid'],
                 'query': result['original_query'],
                 'qanswer': result['generated_answer'],
-                'output': result['generated_answer'],  # For compatibility
+                'output': result['generated_answer'],
                 'iteration': 1,
                 'all_queries': str([result['original_query']])
             })
@@ -340,30 +277,20 @@ Answer the given question. You must conduct reasoning inside <think> and </think
         return self.results_df
 
     def save_results(self, _ret="post_analysis", _k=None, _task='nq_test', _model='generator'):
-        """
-        Save results using both new format and your existing logging methods
-        """
         if _k is None:
             _k =  self.cutoff
             
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Save detailed results to JSON (new format)
         cutoff_label = "dynamic" if self.dynamic else f"cutoff_{self.cutoff}"
         json_filename = f"{self.output_dir}/analysis_results_{cutoff_label}_{timestamp}.json"
         with open(json_filename, 'w', encoding='utf-8') as f:
             json.dump(self.result, f, indent=2, ensure_ascii=False)
         
-        # Prepare DataFrame in your standard format
-        results_df = self.prepare_results()  # FIXED: Method name corrected
-        
-        # Use your existing logging methods if answer data is available
+        results_df = self.prepare_results()
         if self.ans_data is not None:
-            # Use your pre-built log_fn method
             logger.info("Using pre-built logging methods for evaluation...")
             self.log_fn(results_df, _ret, self.ans_data, _k, _task, _model)
             
-            # Calculate and display summary using your evaluator
             eval_results = self.evaluator(results_df, self.ans_data)
             
             logger.info("=== SUMMARY STATISTICS (using your evaluator) ===")
@@ -385,7 +312,6 @@ Answer the given question. You must conduct reasoning inside <think> and </think
             
         else:
             logger.warning("Answer data not provided. Saving results without evaluation.")
-            # Save summary CSV manually
             csv_filename = f"{self.output_dir}/analysis_summary_{cutoff_label}_{timestamp}.csv"
             results_df.to_csv(csv_filename, index=False)
             logger.info(f"Results saved to: {csv_filename}")
@@ -397,37 +323,27 @@ Answer the given question. You must conduct reasoning inside <think> and </think
         df_content = []
         
         for qid in res.qid.unique():
-            # Get golden answers for this qid
             golden_answers = _ans[_ans.qid == qid].gold_answer.to_list()
-            
-            # Handle case where no golden answers are found
             if not golden_answers:
                 logger.warning(f"No golden answers found for QID: {qid}")
                 df_content.append([qid, 0.0, 0.0])
                 continue
-            
-            # Filter out NaN/None golden answers and convert to strings
             golden_answers = [str(a) for a in golden_answers if pd.notna(a) and a is not None and str(a).strip() != '']
             
             if not golden_answers:
                 logger.warning(f"All golden answers are NaN/None for QID: {qid}")
                 df_content.append([qid, 0.0, 0.0])
                 continue
-            
-            # Check if prediction is null
             isnull_indicator = res[res.qid == qid].qanswer.isnull().values[0]
             if isnull_indicator:
                 df_content.append([qid, 0.0, 0.0])
                 continue
                 
             prediction = res[res.qid == qid].qanswer.values[0]
-            
-            # Handle case where prediction is None, empty, or NaN
             if prediction is None or prediction == "" or pd.isna(prediction):
                 df_content.append([qid, 0.0, 0.0])
                 continue
             
-            # Convert prediction to string
             prediction = str(prediction).strip()
             
             if prediction == "":
@@ -435,10 +351,8 @@ Answer the given question. You must conduct reasoning inside <think> and </think
                 continue
             
             try:
-                # Calculate EM score
                 em_score = pyterrier_rag._measures.ems(prediction, golden_answers)
                 
-                # Calculate F1 score
                 f1_list = []
                 for a in golden_answers:
                     f1_list.append(pyterrier_rag._measures.f1_score(prediction, a))
@@ -472,15 +386,17 @@ if __name__ == "__main__":
     parser.add_argument("--cutoff", type=int, default=2)
     parser.add_argument("--dynamic", action="store_true")
     parser.add_argument("--task", type=str, default="nq_test")
+    parser.add_argument("--retriever", type=str)
     args = parser.parse_args()
 
     cutoff = args.cutoff
     dynamic = args.dynamic
     task = args.task
+    retriever = args.retriever
 
-    if task == "nq_test":
-        res_filepath = "/Users/aboodhameed/Desktop/Results/datasets/res/bm25_3_r1.res"
-        qpp_filepath = "/Users/aboodhameed/Desktop/Results/datasets/qpp_res/bm25_3_r1.res"
+    if retriever == "bm25":
+        res_filepath = "/Users/aboodhameed/Desktop/Results/datasets/res/bm25_3_hotpotqa_dev_r1.res"
+        qpp_filepath = "/Users/aboodhameed/Desktop/Results/datasets/qpp_res/bm25_3_hotpotqa_dev_r1.res"
     else:
         res_filepath = "/Users/aboodhameed/Desktop/Results/datasets/res/E5_3_hotpotqa_dev_r1.res"
         qpp_filepath = "/Users/aboodhameed/Desktop/Results/datasets/qpp_res/E5_3_hotpotqa_dev_r1.res"
