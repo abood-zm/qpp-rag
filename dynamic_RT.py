@@ -35,11 +35,13 @@ class QPPMonitor:
         """Calculate the percentage drop in NQC score within the same test group"""
         test_group = self.get_test_group(qid)
         query_index = self.get_query_index(qid)
+        has_dash = ('-' in qid)
         
         # Get previous NQC for this test group
         previous_nqc = self.test_groups.get(test_group, {}).get('previous_nqc', None)
         
-        if previous_nqc is None or query_index == '0':
+        # If qid encodes index via dash, treat index '0' as first; otherwise rely solely on previous_nqc presence
+        if previous_nqc is None or (has_dash and query_index == '0'):
             return 0.0  # No drop for first query in a test group
         
         # Formula: (qpp_i - qpp_i-1) / qpp_i-1
@@ -53,6 +55,7 @@ class QPPMonitor:
         """Determine if current query should be skipped based on NQC drop"""
         test_group = self.get_test_group(qid)
         query_index = self.get_query_index(qid)
+        has_dash = ('-' in qid)
         
         # Calculate drop within the same test group
         drop_result = self.calculate_nqc_drop(qid, current_nqc)
@@ -74,14 +77,17 @@ class QPPMonitor:
         }
         
         # Check if drop exceeds threshold (negative drop means decrease)
-        if drop_percentage <= -self.drop_threshold and query_index != '0':
+        # If qids have explicit indices (with '-'), avoid skipping the very first (index '0').
+        # If not, use presence of previous_nqc to gate first-query behavior.
+        is_first_in_group = (previous_nqc is None) or (has_dash and query_index == '0')
+        if drop_percentage <= -self.drop_threshold and not is_first_in_group:
             print(f"⚠️  Query {qid}: NQC dropped by {abs(drop_percentage)*100:.1f}% "
                   f"({previous_nqc:.4f} → {current_nqc:.4f}) within {test_group}. SKIPPING!")
             query_info['skipped'] = True
             self.query_history.append(query_info)
             return True
         else:
-            if previous_nqc is not None and query_index != '0':
+            if previous_nqc is not None and not (has_dash and query_index == '0'):
                 change_direction = "increased" if drop_percentage >= 0 else "decreased"
                 print(f"✓ Query {qid}: NQC {change_direction} by {abs(drop_percentage)*100:.1f}% "
                       f"({previous_nqc:.4f} → {current_nqc:.4f}) within {test_group}. Continuing...")
@@ -217,6 +223,10 @@ def log_qpp_with_monitoring(res, _ret, _k, _index=-1, q_encoder=-1, _task='nq_te
     # Save QPP results
     qpp_df = pd.DataFrame(qpp_df_values, columns=['qid', 'query', 'qpp_method', 'qpp_estimation', 'qpp_parameters']) 
     qpp_df.to_csv(f"./qpp_res/{output_filename}", mode='a', index=False, header=not csvfile.exists())
+    
+    # Remove skipped queries so downstream R1 generation won't process them
+    if 'skip_query' in res.columns:
+        res = res.loc[res['skip_query'] == False].drop(columns=['skip_query'])
     
     return res
     
