@@ -43,6 +43,9 @@ class QPPMonitor:
             return 0.0  # No drop for first query in a test group
         
         # Formula: (qpp_i - qpp_i-1) / qpp_i-1
+        if previous_nqc == 0:
+            # Avoid division by zero – treat as no actionable drop signal
+            return 0.0, previous_nqc
         drop_percentage = (current_nqc - previous_nqc) / previous_nqc
         return drop_percentage, previous_nqc
     
@@ -147,18 +150,17 @@ def log_fn(res, _ret, _ans, _k=3, _task='nq_test', _model='r1'):
 
 def log_fn_with_skip_check(res, _ret, _ans, _k=3, _task='nq_test', _model='r1'):
     """Modified log_fn that checks for skip flag"""
-    # Check if this query should be skipped
-    if 'skip_query' in res.columns and res['skip_query'].iloc[0] == True:
-        print(f"🚫 Skipping R1 processing for query {res['qid'].iloc[0]} due to QPP drop")
-        
-        # Create a dummy result to maintain pipeline flow
-        skipped_result = res[['qid', 'query']].copy()
-        skipped_result['qanswer'] = None  # No answer generated
-        skipped_result['skipped'] = True
-        
-        return skipped_result
+    # If any rows are marked to skip, null out their answers but keep batch intact
+    if 'skip_query' in res.columns:
+        if res['skip_query'].any():
+            skipped_qids = res.loc[res['skip_query'] == True, 'qid'].unique().tolist()
+            if len(skipped_qids) > 0:
+                print(f"🚫 Skipping R1 logging for {len(skipped_qids)} query(ies) due to QPP drop: {skipped_qids[:5]}{'...' if len(skipped_qids) > 5 else ''}")
+            res = res.copy()
+            res.loc[res['skip_query'] == True, 'qanswer'] = None
+            res.loc[res['skip_query'] == True, 'skipped'] = True
     
-    # Normal processing for non-skipped queries
+    # Proceed with normal logging for the whole batch (skipped rows will evaluate to 0.0)
     return log_fn(res, _ret, _ans, _k, _task, _model)
 
 def log_qpp_with_monitoring(res, _ret, _k, _index=-1, q_encoder=-1, _task='nq_test', _model='r1'):
@@ -174,6 +176,10 @@ def log_qpp_with_monitoring(res, _ret, _k, _index=-1, q_encoder=-1, _task='nq_te
     csvfile = pathlib.Path(f"./qpp_res/{output_filename}")
     retrieval_res_csvfile = pathlib.Path(f"./retrieval_res/{output_filename}")
     qpp_df_values = []
+    # Ensure we don't mutate upstream frames in-place
+    res = res.copy()
+    if 'skip_query' not in res.columns:
+        res['skip_query'] = False
     
     for qid in res.qid.unique():
         sorted_res = res[res.qid==qid].sort_values(by=['score'], ascending=False)
@@ -189,17 +195,11 @@ def log_qpp_with_monitoring(res, _ret, _k, _index=-1, q_encoder=-1, _task='nq_te
         should_skip = qpp_monitor.should_skip_query(qid, nqc_est)
         
         if should_skip:
-            # Mark this query to be skipped
-            # You can either return early or set a flag
-            qpp_monitor.update_previous_nqc(qid, nqc_est)  # Update for next iteration
-            
-            # Still log the QPP data but mark it as skipped
+            # Mark only this qid as skipped and continue processing remaining qids in the batch
+            qpp_monitor.update_previous_nqc(qid, nqc_est)
             qpp_df_values.append([qid, query_text, 'nqc', nqc_est, str({'k': 100, 'skipped': True})])
-            
-            # Create a modified result that signals to skip this query
-            skip_res = res[res.qid==qid].copy()
-            skip_res['skip_query'] = True
-            return skip_res
+            res.loc[res.qid == qid, 'skip_query'] = True
+            continue
         
         # Continue with normal processing for non-skipped queries
         qpp_monitor.update_previous_nqc(qid, nqc_est)
