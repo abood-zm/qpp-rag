@@ -96,13 +96,12 @@ python post-hoc-analysis.py --cutoff 3
 <pre><code>adaptive-rag/
 ├── README.md
 ├── requirements.txt
-└── src/
-    ├── get_r1_res_nq-test.py      # Baseline multi-iterative RAG pipeline (Search R1)
-    ├── post-hoc-analysis.py       # Static & dynamic cutoff evaluation over saved traces
-    ├── dynamic_RT.py              # Real-time QPP-guided dynamic iteration system
-    ├── qpp_methods.py             # NQC, A-Ratio, Spatial QPP predictors
-    ├── utils/                     # (If you add helpers, put them here)
-    └── data/                      # Indexes, processed datasets, traces, etc.
+├── get_r1_res_nq-test.py      # Baseline multi-iterative RAG pipeline (Search R1)
+├── post-hoc-analysis.py       # Static & dynamic cutoff evaluation over saved traces
+├── dynamic_RT.py              # Real-time QPP-guided dynamic iteration system
+├── qpp_methods.py             # NQC, A-Ratio, Spatial QPP predictors
+├── utils/                     # (If you add helpers, put them here)
+└── data/                      # Indexes, processed datasets, traces, etc.
 </code></pre>
 
 
