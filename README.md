@@ -108,5 +108,5 @@ python post-hoc-analysis.py --cutoff 3
 
 <h2 id="license">7. License</h2>
 <p>
-This project is licensed under the Apache License 2.0.
+This project is licensed under the <a href="https://github.com/abood-zm/adaptive-rag/blob/main/LICENSE">Apache License 2.0 index</a>
 </p>
