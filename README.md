@@ -1,78 +1,112 @@
-# Adaptive Multi-Iterative Retrieval-Augmented Generation (RAG)
+<h1 align="center">Dissertation: QPP-Based Cutoff Strategies for
+Multi-Step Retrieval-Augmented
+Generation</h1>
 
-This repository contains the code developed for the dissertation research on **Adaptive Multi-Iterative Retrieval-Augmented Generation (RAG)**. The project explores **dynamic and static cutoff strategies** for multi-step reasoning and evaluates their interaction with different retrievers (BM25 and E5) using **Query Performance Prediction (QPP)**.  
-
-The codebase includes three main Python scripts:
-
----
-
-## 1. Baseline System
-
-**File:** `get_r1_res_nq-test.py`  
-
-- Implements the multi-iterative RAG pipeline with the **Search R1 reinforcement learning model**.  
-- Serves as the reference baseline for comparing cutoff strategies.  
-- **Note:** This script was developed by a third-party PhD student and is included for reproducibility reference only.  
+<h3 align="center">By Abdalrahman Z.M. Hameed, MSc Candidate </h3>
+<h4 align="center">Acknowledgements: Debasis Ganguly, Lecturer in Data Science</h4>
 
 ---
 
-## 2. Post-hoc Analysis
+<h2 id="project-overview">1. Project Overview</h2>
+<p>
+This project investigates <strong>adaptive multi-iterative Retrieval-Augmented Generation (RAG)</strong> using
+query performance prediction (QPP) to decide how many reasoning iterations a system should run.
+It compares <em>fixed</em> and <em>dynamic</em> cutoff strategies over multi-step question answering, evaluating how
+they interact with different retrievers (BM25 and E5) in terms of both retrieval quality and answer accuracy.
+</p>
 
-**File:** `adaptive-rag.py`  
+<h2 id="motivation">2. Motivation</h2>
+<p>
+Multi-step and agentic RAG pipelines can improve reasoning on complex queries, but excessive iterations often
+introduce noisy or irrelevant evidence that <em>hurts</em> performance and wastes computation.
+Empirical results show that QPP scores and downstream accuracy can drop after a certain step, yet most systems
+lack a principled way to detect when to stop. This project aims to better understand how reasoning quality evolves
+across iterations and to design cutoff strategies that prevent over-retrieval while preserving or improving answer quality.
+</p>
 
-- Contains the experimental code developed for analyzing **static and dynamic cutoff strategies**.  
-- Implements adaptive multi-step reasoning with multiple retrievers (BM25, E5).  
-- Performs **post-hoc evaluation** on reasoning quality and answer accuracy using **QPP scores, Exact Match, and F1** metrics.  
-- Supports evaluation of both **fixed** and **dynamic cutoffs**, facilitating detailed analysis of performance trade-offs.  
+<h2 id="project-objectives">3. Project Objectives</h2>
+<ul>
+  <li>
+    Implement a multi-iterative RAG baseline that combines reinforcement-learning-based reasoning
+    (Search R1) with multiple retrievers (BM25 and E5).
+  </li>
+  <li>
+    Measure iteration-wise performance using QPP scores for retrieval quality and Exact Match (EM) / F1
+    for answer quality on the HotpotQA dataset.
+  </li>
+  <li>
+    Compare <strong>fixed</strong> cutoff strategies (e.g., stop after 1–3 steps) with <strong>dynamic</strong> QPP-based cutoffs
+    that terminate reasoning when QPP scores significantly decline between iterations.
+  </li>
+</ul>
 
----
+<h2 id="architecture-overview">4. Architecture Overview</h2>
+<p>
+At a high level, the system implements an <strong>iterative RAG pipeline</strong> with QPP-guided cutoff analysis:
+</p>
+<ul>
+  <li><strong>Input &amp; Retrieval:</strong> The user query is sent to a retriever (BM25 or E5) over a HotpotQA-based Wikipedia index to obtain top-k passages.</li>
+  <li><strong>Multi-step Reasoning (Search R1):</strong> A reinforcement-learning-based LLM generates intermediate
+      reasoning in a structured format, including <code>&lt;think&gt;</code>, <code>&lt;search&gt;</code>, and
+      <code>&lt;information&gt;</code> blocks, and can iteratively reformulate queries and trigger further retrieval.</li>
+  <li><strong>QPP Evaluation:</strong> At each iteration, QPP methods (NQC, A-Ratio, Spatial) estimate retrieval quality
+      based on the current result list, producing a per-step quality signal.</li>
+  <li><strong>Post-hoc Cutoff Analysis:</strong> A separate analysis pipeline slices the reasoning traces at different
+      iteration depths (fixed cutoffs) or applies QPP-based stopping rules (dynamic cutoffs) and regenerates final
+      answers using a base model (Qwen-2.5-7B-Instruct).</li>
+  <li><strong>Metrics &amp; Comparison:</strong> EM and F1 scores are computed against HotpotQA gold answers, enabling a
+      comparison of how different cutoff strategies and retrievers affect both accuracy and efficiency.</li>
+</ul>
 
-## 3. Real-Time Dynamic Cutoff
+<h2 id="installation-usage">5. Installation &amp; Code Usage</h2>
+<ol>
+  <li>
+    <p><strong>Clone the repository</strong></p>
+    <pre><code>git clone https://github.com/abood-zm/adaptive-rag.git
+cd adaptive-rag
+</code></pre>
+  </li>
+  <li>
+    <p><strong>Install dependencies</strong></p>
+    <pre><code>pip install -r requirements.txt
+</code></pre>
+  </li>
+  <li>
+    <p><strong>Run post-hoc analysis (QPP-based cutoff experiments)</strong></p>
+    <p>Dynamic cutoff:</p>
+    <pre><code>python post-hoc-analysis.py --dynamic
+</code></pre>
+    <p>Static cutoff (e.g., 1-step or 3-step):</p>
+    <pre><code>python post-hoc-analysis.py --cutoff 1
+python post-hoc-analysis.py --cutoff 3
+</code></pre>
+  </li>
+  <li>
+    <p><strong>Run dynamic real-time experiments</strong></p>
+    <pre><code>python dynamic-RT.py
+</code></pre>
+    <p>
+      Ensure that retrieval models (BM25, E5) and the HotpotQA-based indices are correctly configured
+      in your environment before running these scripts.
+    </p>
+  </li>
+</ol>
 
-**File:** `dynamic-RT.py`  
-
-- Extends adaptive cutoff mechanisms to **real-time question answering scenarios**.  
-- Dynamically determines the number of reasoning iterations based on query complexity and retrieval quality.  
-- Demonstrates the practical viability of QPP-guided adaptive reasoning in a live setting.  
-
----
-
-## Research Highlights
-
-- Investigates the **interaction between retrievers (BM25 vs E5) and multi-step reasoning**.  
-- Explores the **effectiveness of QPP** in guiding adaptive iteration stopping.  
-- Provides a **reproducible experimental setup** for evaluating reasoning quality, computational efficiency, and cutoff strategies.  
-- Includes all scripts necessary to replicate post-hoc analyses conducted in the dissertation.  
-
----
-
-## Usage
-
-1. Clone the repository:
+<h2 id="file-structure">6. File Structure</h2>
+<pre><code>adaptive-rag/
+├── README.md
+├── requirements.txt
+└── src/
+    ├── get_r1_res_nq-test.py      # Baseline multi-iterative RAG pipeline (Search R1)
+    ├── post-hoc-analysis.py       # Static & dynamic cutoff evaluation over saved traces
+    ├── dynamic_RT.py              # Real-time QPP-guided dynamic iteration system
+    ├── qpp_methods.py             # NQC, A-Ratio, Spatial QPP predictors
+    ├── utils/                     # (If you add helpers, put them here)
+    └── data/                      # Indexes, processed datasets, traces, etc.
+</code></pre>
 
 
-`git clone https://github.com/<your-username>/adaptive-rag.git`
-
-
-## 2.Install dependencies:
-`pip install -r requirements.txt`
-
-## 3. Run post-hoc analysis:
-### For dynamic cutoff:
-`python post-hoc-analysis.py --dynamic`
-
-### For static cutoff:
-`python post-hoc-analysis.py --cutoff 1`
-
-
-## 4. Run dynamic real-time experiments:
-`python dynamic-RT.py`
-
-**Note:** Ensure that retrieval models and datasets are correctly configured in the environment.
-
-
-## Citation:
-
-If you use this repository or the adaptive RAG framework in your research, please cite:
-
-Abdalrahman, Hameed. (2025). *Adaptive Multi-Step Retrieval-Augmented Generation: A Study of Cutoff-Based Reasoning with QPP Evaluation* (Master's dissertation, University of Glasgow).
+<h2 id="license">7. License</h2>
+<p>
+This project is licensed under the Apache License 2.0.
+</p>
