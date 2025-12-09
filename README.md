@@ -3,7 +3,7 @@ Multi-Step Retrieval-Augmented
 Generation</h1>
 
 <h3 align="center">By Abdalrahman Z.M. Hameed, MSc Candidate </h3>
-<h4 align="center">Acknowledgements: Debasis Ganguly, Lecturer in Data Science</h4>
+<h4 align="center">Acknowledgements: Dr. Debasis Ganguly, Lecturer in Data Science</h4>
 
 ---
 
