@@ -95,6 +95,7 @@ python post-hoc-analysis.py --cutoff 3
 <h2 id="file-structure">6. File Structure</h2>
 <pre><code>adaptive-rag/
 ├── README.md
+├── LICENSE
 ├── requirements.txt
 ├── get_r1_res_nq-test.py      # Baseline multi-iterative RAG pipeline (Search R1)
 ├── post-hoc-analysis.py       # Static & dynamic cutoff evaluation over saved traces
