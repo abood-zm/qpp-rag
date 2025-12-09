@@ -395,11 +395,11 @@ if __name__ == "__main__":
     retriever = args.retriever
 
     if retriever == "bm25":
-        res_filepath = "/Users/aboodhameed/Desktop/Results/datasets/res/bm25_3_hotpotqa_dev_r1.res"
-        qpp_filepath = "/Users/aboodhameed/Desktop/Results/datasets/qpp_res/bm25_3_hotpotqa_dev_r1.res"
+        res_filepath = "./datasets/res/bm25_3_hotpotqa_dev_r1.res"
+        qpp_filepath = "./datasets/qpp_res/bm25_3_hotpotqa_dev_r1.res"
     else:
-        res_filepath = "/Users/aboodhameed/Desktop/Results/datasets/res/E5_3_hotpotqa_dev_r1.res"
-        qpp_filepath = "/Users/aboodhameed/Desktop/Results/datasets/qpp_res/E5_3_hotpotqa_dev_r1.res"
+        res_filepath = "./datasets/res/E5_3_hotpotqa_dev_r1.res"
+        qpp_filepath = "./datasets/qpp_res/E5_3_hotpotqa_dev_r1.res"
     
     analysis = PostAnalysis(
         res_filepath=res_filepath,
